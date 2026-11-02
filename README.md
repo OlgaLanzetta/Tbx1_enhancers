@@ -69,4 +69,6 @@ but not identical to the original ones.
 
 ## Citation and license
 
-TODO: add citation and license (code: e.g. MIT; data: see `data/sources.xlsx`).
+The original reference paper is Aurigemma, I., Lanzetta, O., Cirino, A. et al. Endothelial gene regulatory elements associated with cardiopharyngeal lineage differentiation. Commun Biol 7, 351 (2024). https://doi.org/10.1038/s42003-024-06017-8. This work was also used in Lanzetta, O., Bilio, M., Liebig, J., Jechow, K., Ten, F. W., Ferrentino, R., Aurigemma, I., Illingworth, E., Conrad, C., Lukassen, S., Angelini, C., Baldini, A. Tbx1 stabilizes differentiation of the cardiopharyngeal mesoderm and drives morphogenesis in the pharyngeal apparatus. Development (2025) 152 (12): dev204524. https://doi.org/10.1242/dev.204524.
+
+GEO accession numbers for the peaks are listed in the sources.xlsx file.
