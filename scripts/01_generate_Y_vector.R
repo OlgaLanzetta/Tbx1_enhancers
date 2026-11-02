@@ -1,5 +1,4 @@
 # LEGACY version: histone columns computed with the original ifelse(keys %in% agg$bed, agg$x, 0),
-# which does not align the values with the rows of the Y vector. Kept only to compare with older results.
 # The main script is scripts/02_predict_tbx1_enhancers.R.
 
 # 02_predict_tbx1_enhancers.R
