@@ -1,7 +1,6 @@
-# Enhancer prediction at the Tbx1 locus with LASSO logistic regression
+# Enhancer prediction with LASSO logistic regression
 
-Predicts the probability that 14 regions at the *Tbx1* locus (mouse, mm10, chr16:18,576,567-18,618,243)
-are enhancers. A LASSO logistic regression (`glmnet`) is trained on known mouse enhancers
+Predicts the probability that given regions are enhancers. A LASSO logistic regression (`glmnet`) is trained on known mouse enhancers
 (VISTA Enhancer Browser) versus random non-enhancer regions, using as features the overlap with a
 collection of epigenomic peak files plus two histone-mark signals. The final score of each region
 is the mean over the models trained on 10 sets of negatives.
@@ -79,7 +78,7 @@ For any questions regarding the dataset, adapted files, or pipeline execution, p
 
 - **Olga Lanzetta:** o.lanzetta91@gmail.com
 - **Claudia Angelini:** claudia.angelini@cnr.it
-- **Antonio Baldini:** antonio.baldini@unina.it
+- **Antonio Baldini:** bldntn@gmail.com
 
 
 GEO accession numbers for the peaks are listed in the sources.xlsx file.
