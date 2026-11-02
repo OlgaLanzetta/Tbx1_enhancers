@@ -2,8 +2,7 @@
 
 Predicts the probability that given regions are enhancers. A LASSO logistic regression (`glmnet`) is trained on known mouse enhancers
 (VISTA Enhancer Browser) versus random non-enhancer regions, using as features the overlap with a
-collection of epigenomic peak files plus two histone-mark signals. The final score of each region
-is the mean over the models trained on 10 sets of negatives.
+collection of epigenomic peak files plus two histone-mark signals. The final score of each region is the mean of the predictions from models trained on 10 different sets of negatives.
 
 ## Repository layout
 
