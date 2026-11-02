@@ -1,166 +1,115 @@
-# LEGACY version: histone columns computed with the original ifelse(keys %in% agg$bed, agg$x, 0),
-# The main script is scripts/02_predict_tbx1_enhancers.R.
+# 01_generate_Y_vector.R
+# Generates Y vectors (VISTA positives mm10 + negatives via bedtools shuffle)
+# and applies mm10 blacklist filtering.
 
-# 02_predict_tbx1_enhancers.R
-# Trains a LASSO logistic regression (glmnet) on each Y vector set and predicts the enhancer
-# probability of 14 regions at the Tbx1 locus (mm10, chr16). Final score = mean over iterations.
-#
-# Run from the repository root:  setwd("path/to/enhancer-lasso-tbx1")
-
-library(dplyr)
-library(GenomicRanges)
-library(data.table)
 library(Biostrings)
-library(glmnet)
-library(caret)
-library(ROCR)
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(GenomicRanges)
+library(IRanges)
 
 stopifnot("Run this script from the repository root" = dir.exists("scripts"))
 
-# ---- PATHS (relative to the repository root) -------------------------------------
-# "original"  -> data/Y_vectors_original  (the Y vectors used for the published results)
-# "generated" -> data/Y_vectors_generated (produced by 01_generate_Y_vector.R)
-Y_source  <- "original"
+ml_dir    <- "data/raw"
+bed_dir   <- "data/bed_files"
+out_dir   <- "data/Y_vectors_generated"
 
-ml_dir    <- if (Y_source == "original") "data/Y_vectors_original" else "data/Y_vectors_generated"
-peaks_dir <- "data/peaks"     # peak / ChIP-seq files (one column of X each); see data/sources.xlsx
-bins_dir  <- "data/bins"      # H3K27me3 and H3K4me1 2000-bp bin files (score in column 5)
-out_dir   <- "output"
+dir.create(bed_dir, showWarnings = FALSE, recursive = TRUE)
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
-# 14 TBX1 regions defined directly (no external RData file)
-enhancers <- data.frame(
-  seqnames = "chr16",
-  start = c(18576567, 18577384, 18578371, 18580095, 18581868, 18586388, 18587866, 18590110, 18591397, 18601232, 18603959, 18607904, 18610483, 18617351),
-  end   = c(18577247, 18578222, 18579005, 18580974, 18582636, 18587203, 18588576, 18590935, 18592314, 18602126, 18604876, 18608777, 18611385, 18618243)
-)
-enhancers$bed <- paste(enhancers$seqnames, enhancers$start, enhancers$end, sep = "-")
-y.tbx1_base <- makeGRangesFromDataFrame(enhancers, keep.extra.columns = TRUE)
+blacklist_su <- "tutto"
 
-predictions_list <- list()
+fasta_path  <- file.path(ml_dir, "all_enhancer.fasta")
+mm10_path   <- file.path(ml_dir, "ENHANCERS_mm10.bed")
+bl_path     <- file.path(bed_dir, "mm10-blacklist.v2.bed.gz")
+chrom_sizes <- file.path(bed_dir, "mm10.chrom.sizes")
 
-for (i in 0:9) {
-  y_path <- file.path(ml_dir, paste0("Y_vector", i, "_BL.csv"))
-  if (!file.exists(y_path)) next
-  
-  message("Processing: Y_vector", i, "_BL.csv")
-  
-  Y_vector <- read.csv(y_path)
-  if ("X" %in% colnames(Y_vector) || colnames(Y_vector)[1] == "") Y_vector <- Y_vector[, -1]
-  if (!"bed" %in% colnames(Y_vector)) {
-    chr_col <- intersect(c("seqnames", "chr"), colnames(Y_vector))[1]
-    Y_vector$bed <- paste(Y_vector[[chr_col]], Y_vector$start, Y_vector$end, sep = "-")
-  }
-  y <- makeGRangesFromDataFrame(Y_vector)
-  
-  old_wd <- getwd()
-  setwd(peaks_dir)
-  filenames <- list.files(path = peaks_dir)
-  
-  peak_counts <- sapply(filenames, simplify = FALSE, function(file_name) {
-    df <- fread(file_name)[, 1:3]
-    setnames(df, c("seqnames", "chromStart", "chromEnd"))
-    df1 <- makeGRangesFromDataFrame(df)
-    res <- data.frame(countOverlaps(y, df1))
-    colnames(res) <- gsub(".gz", "", file_name)
-    res
-  })
-  setwd(old_wd)
-  
-  X <- do.call("cbind", peak_counts)
-  
-  file_h1 <- fread(file.path(bins_dir, "H3K27me3_Mast_wt_bin_2000_mod.bed.gz"))[, c(1, 2, 3, 5)]
-  setnames(file_h1, c("seqnames", "chromStart", "chromEnd", "score"))
-  file_h1$bed <- paste(file_h1$seqnames, file_h1$chromStart, file_h1$chromEnd, sep = "-")
-  
-  y_extra <- makeGRangesFromDataFrame(Y_vector, keep.extra.columns = TRUE)
-  f1 <- makeGRangesFromDataFrame(file_h1, keep.extra.columns = TRUE)
-  
-  intersection1 <- findOverlaps(y_extra, f1, type = "any")
-  df_int1 <- data.frame(y_extra[queryHits(intersection1), ], f1[subjectHits(intersection1), ])
-  df_filter1 <- df_int1[, c(6, 14, 13)]
-  match1 <- aggregate(df_filter1$score, by = list(bed = df_filter1$bed), FUN = sum)
-  
-  col_h1 <- ifelse(Y_vector$bed %in% match1$bed, match1$x, 0)
-  col_h1 <- as.numeric(as.data.frame(col_h1)$col_h1)
-  
-  file_h2 <- fread(file.path(bins_dir, "H3K4me1_Mast_wt_bin_2000_mod.bed.gz"))[, c(1, 2, 3, 5)]
-  setnames(file_h2, c("seqnames", "chromStart", "chromEnd", "score"))
-  file_h2$bed <- paste(file_h2$seqnames, file_h2$chromStart, file_h2$chromEnd, sep = "-")
-  
-  f2 <- makeGRangesFromDataFrame(file_h2, keep.extra.columns = TRUE)
-  intersection2 <- findOverlaps(y_extra, f2, type = "any")
-  df_int2 <- data.frame(y_extra[queryHits(intersection2), ], f2[subjectHits(intersection2), ])
-  df_filter2 <- df_int2[, c(6, 14, 13)]
-  match2 <- aggregate(df_filter2$score, by = list(bed = df_filter2$bed), FUN = sum)
-  
-  col_h2 <- ifelse(Y_vector$bed %in% match2$bed, match2$x, 0)
-  col_h2 <- as.numeric(as.data.frame(col_h2)$col_h2)
-  
-  X <- cbind(X, H3K27me3 = col_h1, H3K4me1 = col_h2)
-  X <- as.matrix(X)
-  
-  Y <- Y_vector$value
-  
-  set.seed(1)
-  inTrain <- createDataPartition(Y, p = 0.80, list = FALSE)
-  X.train <- X[inTrain, ]
-  Y.train <- Y[inTrain]
-  
-  cv.out <- cv.glmnet(X.train, Y.train, alpha = 1, family = "binomial")
-  lasso.mod.train <- glmnet(X.train, Y.train, lambda = cv.out$lambda.min, alpha = 1, family = "binomial")
-  
-  old_wd <- getwd()
-  setwd(peaks_dir)
-  peak_counts_tbx1 <- sapply(filenames, simplify = FALSE, function(file_name) {
-    df <- fread(file_name)[, 1:3]
-    setnames(df, c("seqnames", "chromStart", "chromEnd"))
-    df1 <- makeGRangesFromDataFrame(df)
-    res <- data.frame(countOverlaps(y.tbx1_base, df1))
-    colnames(res) <- gsub(".gz", "", file_name)
-    res
-  })
-  setwd(old_wd)
-  
-  X.tbx1 <- do.call("cbind", peak_counts_tbx1)
-  
-  intersection_t1 <- findOverlaps(y.tbx1_base, f1, type = "any")
-  df_t1 <- data.frame(y.tbx1_base[queryHits(intersection_t1), ], f1[subjectHits(intersection_t1), ])
-  df_filter_t1 <- df_t1[, c(6, 12, 13)]
-  match_t1 <- aggregate(df_filter_t1$score, by = list(bed = df_filter_t1$bed), FUN = sum)
-  
-  col_tbx1_h1 <- ifelse(enhancers$bed %in% match_t1$bed, match_t1$x, 0)
-  col_tbx1_h1 <- as.numeric(as.data.frame(col_tbx1_h1)$col_tbx1_h1)
-  
-  intersection_t2 <- findOverlaps(y.tbx1_base, f2, type = "any")
-  df_t2 <- data.frame(y.tbx1_base[queryHits(intersection_t2), ], f2[subjectHits(intersection_t2), ])
-  df_filter_t2 <- df_t2[, c(6, 12, 13)]
-  match_t2 <- aggregate(df_filter_t2$score, by = list(bed = df_filter_t2$bed), FUN = sum)
-  
-  col_tbx1_h2 <- ifelse(enhancers$bed %in% match_t2$bed, match_t2$x, 0)
-  col_tbx1_h2 <- as.numeric(as.data.frame(col_tbx1_h2)$col_tbx1_h2)
-  
-  X.tbx1 <- cbind(X.tbx1, H3K27me3 = col_tbx1_h1, H3K4me1 = col_tbx1_h2)
-  X.tbx1 <- as.matrix(X.tbx1)
-  
-  # Only change to the model: if the single-lambda refit does not converge and returns an empty
-  # model, use the cv.glmnet fit at lambda.min. Otherwise this is the original code.
-  n_coef <- sum(as.numeric(coef(lasso.mod.train))[-1] != 0)
-  if (n_coef == 0) {
-    warning("Iteration ", i, ": empty refit model, using cv.glmnet at lambda.min")
-    Y.lasso.pred.tbx1 <- predict(cv.out, newx = X.tbx1, s = "lambda.min", type = "response")
-  } else {
-    Y.lasso.pred.tbx1 <- predict(lasso.mod.train, newx = X.tbx1, type = "response")
-  }
-  pred_df <- as.data.frame(Y.lasso.pred.tbx1)
-  rownames(pred_df) <- enhancers$bed
-  
-  predictions_list[[paste0("iter_", i)]] <- pred_df
+if (!file.exists(bl_path)) {
+  message("Downloading official mm10 blacklist (Boyle Lab)...")
+  try(download.file("https://github.com/Boyle-Lab/Blacklist/raw/master/lists/mm10-blacklist.v2.bed.gz",
+                    bl_path, mode = "wb"), silent = TRUE)
+}
+if (!file.exists(chrom_sizes)) {
+  message("Downloading mm10.chrom.sizes from UCSC...")
+  download.file("http://hgdownload.cse.ucsc.edu/goldenPath/mm10/bigZips/mm10.chrom.sizes", chrom_sizes)
 }
 
-predictions_all <- do.call(cbind, predictions_list)
-predictions_mean <- rowMeans(predictions_all)
-print(predictions_mean)
+fastaFile3 <- readDNAStringSet(fasta_path)
+seq_name3 <- as.data.frame(fastaFile3@ranges@NAMES)
+seq_name_all <- data.frame("region" = seq_name3, "value" = 1, "seq" = paste(fastaFile3))
+sep3 <- separate(seq_name_all, fastaFile3.ranges.NAMES, into = c("a", "chr", "start", "end", "element", "number", "tipo"))
+all_df <- sep3[, -c(1, 5, 6)]
+remove(seq_name3, seq_name_all, sep3)
 
-saveRDS(predictions_all, file.path(out_dir, "predictions_all_iterations.rds"))
-saveRDS(predictions_mean, file.path(out_dir, "predictions_mean.rds"))
+all_df$bed <- paste(all_df$chr, all_df$start, all_df$end, sep = "-")
+all_df <- all_df[, -5]
+all_df <- all_df[-114, ]
+
+all_mm10 <- fread(mm10_path)[, 1:3]
+colnames(all_mm10) <- c("chr", "start", "end")
+all_mm10$bed <- paste(all_mm10$chr, all_mm10$start, all_mm10$end, sep = "-")
+
+new <- cbind(all_mm10, all_df)
+new <- new[, -c(5, 6, 7, 9)]
+new$width <- new$end - new$start
+
+new_positive <- new[new$tipo == "positive", ]
+bed2 <- transform(new_positive, 
+                  chromStart = ifelse(start > end, end, start),
+                  chromEnd   = ifelse(end < start, start, end))
+
+bed3 <- GenomicRanges::makeGRangesFromDataFrame(bed2)
+bed4 <- rtracklayer::export(bed3, format = "bed", ignore.strand = FALSE)
+
+pos_full <- file.path(out_dir, "enhancers_only_positive_mm10.bed")
+write.table(bed4, pos_full, sep = "\t", col.names = FALSE, row.names = FALSE, quote = FALSE)
+
+pos3 <- file.path(out_dir, "positive_enhancers_mm10.bed")
+all3 <- file.path(out_dir, "all_enhancers_mm10.bed")
+fwrite(fread(pos_full, select = 1:3), pos3, sep = "\t", col.names = FALSE)
+fwrite(fread(mm10_path, select = 1:3), all3, sep = "\t", col.names = FALSE)
+
+enhancers <- as.data.frame(new[new$tipo == "positive", -c(5, 6)])
+enhancers$value <- 1
+
+bl <- fread(bl_path, header = FALSE, select = 1:3)
+setnames(bl, c("chr", "start", "end"))
+bl_gr <- makeGRangesFromDataFrame(bl)
+
+rimuovi_bl <- function(df) {
+  ov <- findOverlaps(makeGRangesFromDataFrame(df), bl_gr, type = "any")
+  if (length(ov) > 0) df <- df[-unique(queryHits(ov)), ]
+  df
+}
+
+shuffle_neg <- function(seed) {
+  out <- tempfile(fileext = ".bed")
+  system(sprintf("bedtools shuffle -seed %d -excl %s -i %s -g %s > %s",
+                 seed, all3, pos3, chrom_sizes, out))
+  n <- fread(out, select = 1:3)
+  setnames(n, c("chr", "start", "end"))
+  n
+}
+
+costruisci_Y <- function(neg) {
+  neg <- as.data.frame(neg)
+  neg$bed <- paste(neg$chr, neg$start, neg$end, sep = "-")
+  neg$value <- 0
+  neg <- neg[, c("chr", "start", "end", "bed", "value")]
+  
+  if (blacklist_su == "negativi") neg <- rimuovi_bl(neg)
+  Y <- rbind(enhancers[, c("chr", "start", "end", "bed", "value")], neg)
+  if (blacklist_su == "tutto") Y <- rimuovi_bl(Y)
+  
+  Y
+}
+
+for (i in 0:9) {
+  message("Generating Y_vector", i, "_BL.csv ...")
+  seed_val <- if (i == 0) 42 else i
+  Yi <- costruisci_Y(shuffle_neg(seed_val))
+  write.csv(Yi, file.path(out_dir, paste0("Y_vector", i, "_BL.csv")), row.names = FALSE)
+}
+
+message("Completed successfully.")
